@@ -15,6 +15,12 @@
 	#extension GL_ARB_shading_language_packing: enable
 #endif
 
+#ifdef BLOCK_LIGHT_SHADOWS
+	#include "/lib/light_list.glsl"
+	#include "/lib/voxel_common.glsl"
+	#include "/lib/lpv_blocks.glsl"
+#endif
+
 #include "/lib/util.glsl"
 #include "/lib/res_params.glsl"
 
@@ -1505,6 +1511,78 @@ void main() {
 		
 		vec3 blockLightColor = doBlockLightLighting(vec3(TORCH_R,TORCH_G,TORCH_B), lightmap.x, feetPlayerPos, lpvPos, viewPos, isDHrange, blueNoise(), FlatNormals, hand);
 		Indirect_lighting += blockLightColor;
+
+		// Block light shadows (with colored transparency support)
+		#ifdef BLOCK_LIGHT_SHADOWS
+		if (!hand && !entities) {
+			vec3 shadowSum = vec3(0.0);
+			float weightSum = 0.0;
+			float maxDistanceFade = 0.0;
+			float shadowNoise = blueNoise();
+
+			int maxSlot = min(lightCount, BLOCK_LIGHT_SHADOWS_MAX_LIGHTS);
+
+			// DEBUG: Show light count as bar at top of screen
+			#ifdef BLOCK_LIGHT_SHADOWS_DEBUG
+			int validLights = 0;
+			for (int i = 0; i < maxSlot; i++) {
+				if (slotDist[i] < 0xFFFFFFFFu) validLights++;
+			}
+
+			// Draw light count bar at top of screen
+			if (texcoord.y < 0.02) {
+				float barWidth = float(validLights) / float(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS);
+				if (texcoord.x < barWidth) {
+					// Green to red gradient based on how full
+					Indirect_lighting = mix(vec3(0.0, 2.0, 0.0), vec3(2.0, 0.0, 0.0), barWidth) * 5.0;
+				} else {
+					Indirect_lighting = vec3(0.1);
+				}
+			}
+			#endif
+
+			for (int i = 0; i < maxSlot; i++) {
+				// Skip empty slots
+				if (slotDist[i] >= 0xFFFFFFFFu) continue;
+
+				vec3 lightWorldPos = lights[i].position.xyz;
+				float lightRange = lights[i].position.w;
+
+				// Distance from camera to light (for fade)
+				float lightDistToCam = float(slotDist[i]) / 1000.0;
+				// Fade out shadow based on distance from camera
+				float distanceFade = 1.0 - smoothstep(float(BLOCK_LIGHT_SHADOWS_FADE_START), float(BLOCK_LIGHT_SHADOWS_FADE_END), lightDistToCam);
+				if (distanceFade <= 0.0) continue;
+
+				// Compute distance from surface to light (in world space)
+				vec3 surfaceWorldPos = feetPlayerPos + cameraPosition;
+				float dist = distance(lightWorldPos, surfaceWorldPos);
+
+				// Only process lights within range (skip very close to avoid self-shadowing)
+				if (dist < lightRange * 2.0 && dist > 0.5) {
+					// Light position in player/world space
+					vec3 lightPlayerPos = lightWorldPos - cameraPosition;
+
+					// Voxel-based shadow tracing (view-independent, returns color)
+					vec3 shadow = traceBlockLightShadow(feetPlayerPos, lightPlayerPos, shadowNoise);
+
+					// Weight by light contribution (closer = more weight)
+					float weight = 1.0 - smoothstep(0.0, lightRange * 2.0, dist);
+					shadowSum += shadow * weight;
+					weightSum += weight;
+					maxDistanceFade = max(maxDistanceFade, distanceFade);
+
+					shadowNoise = fract(shadowNoise + 0.618);
+				}
+			}
+
+			// Apply weighted average shadow to indirect lighting (with distance fade)
+			if (weightSum > 0.0) {
+				vec3 avgShadow = shadowSum / weightSum;
+				Indirect_lighting *= mix(vec3(1.0), avgShadow, BLOCK_LIGHT_SHADOWS_STRENGTH * maxDistanceFade);
+			}
+		}
+		#endif
 
 		vec4 flashLightSpecularData = vec4(0.0);
 		#ifdef FLASHLIGHT

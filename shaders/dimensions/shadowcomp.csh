@@ -30,6 +30,11 @@ layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
     #include "/lib/lpv_buffer.glsl"
     #include "/lib/voxel_common.glsl"
 
+    #ifdef BLOCK_LIGHT_SHADOWS
+        #define LIGHT_LIST_WRITE
+        #include "/lib/light_list.glsl"
+    #endif
+
     int sumOf(ivec3 vec) {return vec.x + vec.y + vec.z;}
 
     int getSharedIndex(ivec3 pos) {
@@ -123,6 +128,22 @@ void main() {
 
         barrier();
 
+        // Reset light list at start of frame
+        #ifdef BLOCK_LIGHT_SHADOWS
+            // Initialize all slots to max distance (only first work group)
+            if (gl_WorkGroupID == uvec3(0)) {
+                uint tid = gl_LocalInvocationIndex;
+                if (tid < uint(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS)) {
+                    slotDist[tid] = 0xFFFFFFFFu;
+                }
+                if (tid == 0) {
+                    lightCount = 0;
+                }
+            }
+            barrier();
+            memoryBarrierBuffer();
+        #endif
+
         // Exit early if outside LPV buffer size
         ivec3 imgCoord = ivec3(gl_GlobalInvocationID);
         if (any(greaterThanEqual(imgCoord, LpvSize3))) return;
@@ -158,6 +179,36 @@ void main() {
             vec3 hsv = RgbToHsv(lightColor);
             hsv.z = exp2(lightRange) - 1.0;
             lightValue.rgb += HsvToRgb(hsv);
+
+            // Add to light list for shadow casting
+            #ifdef BLOCK_LIGHT_SHADOWS
+                // Convert LPV coord to player-relative position (inverse of GetLpvPosition)
+                vec3 cameraOffset = fract(cameraPosition);
+                vec3 lightPlayerPos = vec3(imgCoord) - cameraOffset - vec3(LpvSize3) * 0.5 + 0.5;
+                vec3 lightWorldPos = lightPlayerPos + cameraPosition;
+
+                // Only add lights within range and with light level >= 8
+                // Add small buffer beyond FADE_END to prevent edge flickering
+                float distToCam = length(lightPlayerPos);
+                if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 4.0 && lightRange >= 8.0) {
+                    // Hash position to get slot
+                    uvec3 posHash = uvec3(imgCoord);
+                    uint hash = posHash.x * 73856093u ^ posHash.y * 19349663u ^ posHash.z * 83492791u;
+                    int slot = int(hash % uint(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS));
+
+                    // Convert distance to uint for atomic operations (closer = smaller)
+                    uint myDist = uint(distToCam * 1000.0);
+
+                    // Try to claim slot - closer lights win via atomicMin
+                    uint oldDist = atomicMin(slotDist[slot], myDist);
+
+                    // If we won (our distance is now in the slot), write our data
+                    if (myDist <= oldDist) {
+                        lights[slot].position = vec4(lightWorldPos, lightRange);
+                        atomicMax(lightCount, slot + 1);
+                    }
+                }
+            #endif
         }
 
         // Convert back to linear RGB space

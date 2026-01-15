@@ -70,6 +70,96 @@
     }
 #endif
 
+// Block light shadow tracing - VOXEL SPACE (view-independent)
+// Returns vec3 color tint (1.0 = no shadow, 0.0 = full shadow, colored = tinted)
+#if defined BLOCK_LIGHT_SHADOWS && defined IS_LPV_ENABLED
+    vec3 traceBlockLightShadow(vec3 surfacePlayerPos, vec3 lightPlayerPos, float noise) {
+        // Convert to voxel grid coordinates
+        vec3 cameraOffset = fract(cameraPosition);
+        vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+        vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+
+        // Ray from surface to light in voxel space
+        vec3 rayVec = lightVoxel - surfaceVoxel;
+        float rayLength = length(rayVec);
+        if (rayLength < 0.5) return vec3(1.0);
+        vec3 rayDir = rayVec / rayLength;
+
+        // Use DDA-style stepping
+        float stepSize = 0.4;
+        int steps = int(rayLength / stepSize) + 1;
+        steps = min(steps, BLOCK_LIGHT_SHADOWS_QUALITY);
+
+        // Jittered start to reduce banding
+        float startOffset = 0.6 + noise * 0.4;
+
+        // Track previous voxel to avoid double-checking same cell
+        ivec3 prevVoxel = ivec3(-1);
+
+        // Accumulated shadow color (starts fully lit)
+        vec3 shadowTint = vec3(1.0);
+
+        for (int i = 0; i < steps; i++) {
+            float dist = startOffset + stepSize * float(i);
+            if (dist >= rayLength - 0.4) break;
+
+            // Position along ray in voxel space
+            vec3 voxelPos = surfaceVoxel + rayDir * dist;
+            ivec3 voxelCoord = ivec3(floor(voxelPos));
+
+            // Skip if same voxel as previous step
+            if (voxelCoord == prevVoxel) continue;
+            prevVoxel = voxelCoord;
+
+            // Bounds check
+            if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
+                continue;
+            }
+
+            // Sample voxel - check if solid block exists
+            uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
+
+            // If there's a block
+            if (blockId > 0u && blockId != 65535u) {
+                // Get block data for tint color
+                uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+
+                // Check if it's a light emitter (skip those)
+                float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
+                if (blockLightRange >= 1.0) continue;
+
+                // Get tint color (for transparent blocks like stained glass)
+                vec3 tintColor = unpackUnorm4x8(blockData.g).rgb;
+                float tintBrightness = max(max(tintColor.r, tintColor.g), tintColor.b);
+
+                // Calculate penumbra softness based on distance ratio
+                // Occluders closer to surface = sharper shadow, closer to light = softer
+                float occluderDist = dist;
+                float penumbra = occluderDist / rayLength; // 0 at surface, 1 at light
+                penumbra = penumbra * 0.15; // Small softness for edge anti-aliasing
+
+                // If tint is near black, it's opaque
+                if (tintBrightness < 0.1) {
+                    // Mostly hard shadow with slight penumbra softness
+                    float shadowAmount = 1.0 - penumbra;
+                    return vec3(mix(1.0, 1.0 - shadowAmount, BLOCK_LIGHT_SHADOWS_STRENGTH));
+                }
+
+                // Accumulate tint color (multiply for each transparent block)
+                shadowTint *= mix(vec3(1.0), tintColor, 1.0 - penumbra * 0.3);
+
+                // If accumulated tint is too dark, stop
+                if (max(max(shadowTint.r, shadowTint.g), shadowTint.b) < 0.05) {
+                    return vec3(mix(1.0, 0.0, BLOCK_LIGHT_SHADOWS_STRENGTH));
+                }
+            }
+        }
+
+        // Apply shadow strength to the tint
+        return mix(vec3(1.0), shadowTint, BLOCK_LIGHT_SHADOWS_STRENGTH);
+    }
+#endif
+
 #ifdef IS_LPV_ENABLED
     vec3 GetHandLight(const in int itemId, const in vec3 playerPos, inout float lightRange) {
         vec3 lightFinal = vec3(0.0);
