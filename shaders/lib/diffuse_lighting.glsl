@@ -1,3 +1,5 @@
+#include "/lib/blocks.glsl"
+
 #if defined MAIN_SHADOW_PASS && defined LPV_HANDHELD_SHADOWS && defined IS_LPV_ENABLED
     float swapperlinZ2(float depth, float _near, float _far) {
         return (2.0 * _near) / (_far + _near - depth * (_far - _near));
@@ -73,91 +75,373 @@
 // Block light shadow tracing - VOXEL SPACE (view-independent)
 // Returns vec3 color tint (1.0 = no shadow, 0.0 = full shadow, colored = tinted)
 #if defined BLOCK_LIGHT_SHADOWS && defined IS_LPV_ENABLED
+
+    // Noise for jittering AABB bounds (set per-trace)
+    float aabbJitter = 0.0;
+
+    // Ray-AABB intersection test
+    // rayOrigin/rayDir in voxel space, boxMin/boxMax in local [0,1] space relative to voxelCoord
+    bool rayHitsAABB(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, vec3 voxelPos) {
+        // Jitter bounds slightly so non-full blocks get temporal blur like full blocks
+        float jitter = (aabbJitter - 0.5) * 0.2;
+        vec3 worldMin = voxelPos + boxMin + jitter;
+        vec3 worldMax = voxelPos + boxMax - jitter;
+
+        vec3 invDir = 1.0 / rayDir;
+        vec3 t1 = (worldMin - rayOrigin) * invDir;
+        vec3 t2 = (worldMax - rayOrigin) * invDir;
+
+        vec3 tMin = min(t1, t2);
+        vec3 tMax = max(t1, t2);
+
+        float tNear = max(max(tMin.x, tMin.y), tMin.z);
+        float tFar = min(min(tMax.x, tMax.y), tMax.z);
+
+        return tNear <= tFar && tFar > 0.0;
+    }
+
+    // Test if ray intersects the actual block shape (not just the voxel cube)
+    // Returns true if ray is occluded by block geometry
+    bool testBlockShape(uint blockId, vec3 rayOrigin, vec3 rayDir, vec3 voxelPos) {
+
+        // === FENCES / IRON BARS (block.51, block.52 in block.properties) ===
+        // These use BLOCK_LPV_MIN/MED IDs for LPV occlusion, but we need shape testing for shadows
+        // Fence: center post 4x16x4 pixels (0.25 x 1.5 x 0.25, extends above block)
+        if (blockId == BLOCK_LPV_MIN) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.375, 0.0, 0.375), vec3(0.625, 1.0, 0.625), voxelPos);
+        }
+
+        // Iron bars: thin cross shape (approximate as center + cross)
+        if (blockId == BLOCK_LPV_MED) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.4375, 0.0, 0.0), vec3(0.5625, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.4375), vec3(1.0, 1.0, 0.5625), voxelPos);
+        }
+
+        // === LANTERNS - fake cage shadow (cross + top/bottom) ===
+        // Simulates light inside lantern casting shadows through the frame
+        if (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN) {
+            // Cross bars (N-S and E-W thin planes through center)
+            bool crossNS = rayHitsAABB(rayOrigin, rayDir, vec3(0.35, 0.0, 0.0), vec3(0.65, 1.0, 1.0), voxelPos);
+            bool crossEW = rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.35), vec3(1.0, 1.0, 0.65), voxelPos);
+            // Top and bottom plates
+            bool top = rayHitsAABB(rayOrigin, rayDir, vec3(0.2, 0.85, 0.2), vec3(0.8, 1.0, 0.8), voxelPos);
+            bool bottom = rayHitsAABB(rayOrigin, rayDir, vec3(0.2, 0.0, 0.2), vec3(0.8, 0.15, 0.8), voxelPos);
+            return crossNS || crossEW || top || bottom;
+        }
+
+        // === SLABS ===
+        if (blockId == BLOCK_SLAB_TOP) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_SLAB_BOTTOM) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
+        }
+
+        // === CARPET / PRESSURE PLATE / SNOW ===
+        if (blockId == BLOCK_CARPET || blockId == BLOCK_PRESSURE_PLATE) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0625, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_SNOW_LAYERS) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.25, 1.0), voxelPos);
+        }
+
+        // === TRAPDOORS (closed) ===
+        if (blockId == BLOCK_TRAPDOOR_BOTTOM) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.1875, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_TRAPDOOR_TOP) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.8125, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+        // Trapdoors open (vertical)
+        if (blockId == BLOCK_TRAPDOOR_N) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
+        }
+        if (blockId == BLOCK_TRAPDOOR_S) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_TRAPDOOR_W) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_TRAPDOOR_E) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+
+        // === STAIRS (bottom) - L-shaped, test 2 boxes ===
+        // Bottom slab + back portion based on facing
+        if (blockId == BLOCK_STAIRS_BOTTOM_N) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 0.5), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_BOTTOM_S) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.5), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_BOTTOM_W) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(0.5, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_BOTTOM_E) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+
+        // === STAIRS (top, upside-down) ===
+        if (blockId == BLOCK_STAIRS_TOP_N) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 0.5), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_TOP_S) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.5), vec3(1.0, 0.5, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_TOP_W) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.5, 0.5, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_STAIRS_TOP_E) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
+        }
+
+        // === STAIRS (inner corners - 3/4 block) ===
+        if (blockId >= BLOCK_STAIRS_BOTTOM_INNER_S_E && blockId <= BLOCK_STAIRS_BOTTOM_INNER_N_E) {
+            // Inner corners are mostly solid - approximate as full bottom + 3/4 top
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 0.5), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.5), vec3(0.5, 1.0, 1.0), voxelPos);
+        }
+        if (blockId >= BLOCK_STAIRS_TOP_INNER_S_E && blockId <= BLOCK_STAIRS_TOP_INNER_N_E) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 0.5), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.5), vec3(0.5, 0.5, 1.0), voxelPos);
+        }
+
+        // === STAIRS (outer corners - 1/4 block on top) ===
+        if (blockId >= BLOCK_STAIRS_BOTTOM_OUTER_N_W && blockId <= BLOCK_STAIRS_BOTTOM_OUTER_S_W) {
+            // Outer corners: bottom slab + small corner piece
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(0.5, 1.0, 0.5), voxelPos);
+        }
+        if (blockId >= BLOCK_STAIRS_TOP_OUTER_N_W && blockId <= BLOCK_STAIRS_TOP_OUTER_S_W) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.5, 0.5, 0.5), voxelPos);
+        }
+
+        // === WALLS - center post (4x16x4 pixels = 0.25 x 1.0 x 0.25) ===
+        if (blockId >= BLOCK_WALL_MIN && blockId <= BLOCK_WALL_MAX) {
+            // All walls have center post
+            bool hit = rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.3125), vec3(0.6875, 1.0, 0.6875), voxelPos);
+
+            // Check for arm extensions based on connection state
+            // Wall connections extend from center to edge
+            // LOW walls are 0.8125 tall, TALL walls are full height
+            float wallHeight = 1.0; // Simplified - treat all as full height for shadows
+
+            // North arm (negative Z)
+            if (blockId == BLOCK_WALL_POST_LOW_N || blockId == BLOCK_WALL_POST_LOW_N_S ||
+                blockId == BLOCK_WALL_POST_LOW_N_W || blockId == BLOCK_WALL_POST_LOW_N_E ||
+                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_N_E_S ||
+                blockId == BLOCK_WALL_POST_LOW_W_N_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
+                blockId == BLOCK_WALL_POST_TALL_N || blockId == BLOCK_WALL_POST_TALL_N_S ||
+                blockId == BLOCK_WALL_POST_TALL_N_W || blockId == BLOCK_WALL_POST_TALL_N_E ||
+                blockId == BLOCK_WALL_LOW_N_S || blockId == BLOCK_WALL_LOW_N_W || blockId == BLOCK_WALL_LOW_N_E ||
+                blockId == BLOCK_WALL_TALL_N_S || blockId == BLOCK_WALL_TALL_N_W || blockId == BLOCK_WALL_TALL_N_E) {
+                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.0), vec3(0.6875, wallHeight, 0.3125), voxelPos);
+            }
+            // South arm (positive Z)
+            if (blockId == BLOCK_WALL_POST_LOW_S || blockId == BLOCK_WALL_POST_LOW_N_S ||
+                blockId == BLOCK_WALL_POST_LOW_S_W || blockId == BLOCK_WALL_POST_LOW_S_E ||
+                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_N_E_S ||
+                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
+                blockId == BLOCK_WALL_POST_TALL_S || blockId == BLOCK_WALL_POST_TALL_N_S ||
+                blockId == BLOCK_WALL_POST_TALL_S_W || blockId == BLOCK_WALL_POST_TALL_S_E ||
+                blockId == BLOCK_WALL_LOW_N_S || blockId == BLOCK_WALL_LOW_S_W || blockId == BLOCK_WALL_LOW_S_E ||
+                blockId == BLOCK_WALL_TALL_N_S || blockId == BLOCK_WALL_TALL_S_W || blockId == BLOCK_WALL_TALL_S_E) {
+                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.6875), vec3(0.6875, wallHeight, 1.0), voxelPos);
+            }
+            // West arm (negative X)
+            if (blockId == BLOCK_WALL_POST_LOW_W || blockId == BLOCK_WALL_POST_LOW_W_E ||
+                blockId == BLOCK_WALL_POST_LOW_N_W || blockId == BLOCK_WALL_POST_LOW_S_W ||
+                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_W_N_E ||
+                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
+                blockId == BLOCK_WALL_POST_TALL_W || blockId == BLOCK_WALL_POST_TALL_W_E ||
+                blockId == BLOCK_WALL_POST_TALL_N_W || blockId == BLOCK_WALL_POST_TALL_S_W ||
+                blockId == BLOCK_WALL_LOW_W_E || blockId == BLOCK_WALL_LOW_N_W || blockId == BLOCK_WALL_LOW_S_W ||
+                blockId == BLOCK_WALL_TALL_W_E || blockId == BLOCK_WALL_TALL_N_W || blockId == BLOCK_WALL_TALL_S_W) {
+                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.3125), vec3(0.3125, wallHeight, 0.6875), voxelPos);
+            }
+            // East arm (positive X)
+            if (blockId == BLOCK_WALL_POST_LOW_E || blockId == BLOCK_WALL_POST_LOW_W_E ||
+                blockId == BLOCK_WALL_POST_LOW_N_E || blockId == BLOCK_WALL_POST_LOW_S_E ||
+                blockId == BLOCK_WALL_POST_LOW_N_E_S || blockId == BLOCK_WALL_POST_LOW_W_N_E ||
+                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
+                blockId == BLOCK_WALL_POST_TALL_E || blockId == BLOCK_WALL_POST_TALL_W_E ||
+                blockId == BLOCK_WALL_POST_TALL_N_E || blockId == BLOCK_WALL_POST_TALL_S_E ||
+                blockId == BLOCK_WALL_LOW_W_E || blockId == BLOCK_WALL_LOW_N_E || blockId == BLOCK_WALL_LOW_S_E ||
+                blockId == BLOCK_WALL_TALL_W_E || blockId == BLOCK_WALL_TALL_N_E || blockId == BLOCK_WALL_TALL_S_E) {
+                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.6875, 0.0, 0.3125), vec3(1.0, wallHeight, 0.6875), voxelPos);
+            }
+
+            return hit;
+        }
+
+        // === DOORS (thin vertical panels) ===
+        if (blockId == BLOCK_DOOR_N) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
+        }
+        if (blockId == BLOCK_DOOR_S) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_DOOR_W) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
+        }
+        if (blockId == BLOCK_DOOR_E) {
+            return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        }
+
+        // Default: pass through (don't shadow) - only explicitly defined shapes cast shadows
+        return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+    }
+
     vec3 traceBlockLightShadow(vec3 surfacePlayerPos, vec3 lightPlayerPos, float noise) {
-        // Convert to voxel grid coordinates
-        vec3 cameraOffset = fract(cameraPosition);
-        vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
-        vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+    // Convert to voxel grid coordinates
+    vec3 cameraOffset = fract(cameraPosition);
+    vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+    vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
 
-        // Ray from surface to light in voxel space
-        vec3 rayVec = lightVoxel - surfaceVoxel;
-        float rayLength = length(rayVec);
-        if (rayLength < 0.5) return vec3(1.0);
-        vec3 rayDir = rayVec / rayLength;
+    // Ray from surface to light in voxel space
+    vec3 rayVec = lightVoxel - surfaceVoxel;
+    float rayLength = length(rayVec);
+    if (rayLength < 0.5) return vec3(1.0);
+    vec3 rayDir = rayVec / rayLength;
 
-        // Use DDA-style stepping
-        float stepSize = 0.4;
-        int steps = int(rayLength / stepSize) + 1;
-        steps = min(steps, BLOCK_LIGHT_SHADOWS_QUALITY);
+    // Also jitter AABB bounds so non-full blocks blur similarly
+    aabbJitter = noise;
 
-        // Jittered start to reduce banding
-        float startOffset = 0.6 + noise * 0.4;
+    // Jitter ray start perpendicular to ray direction for soft shadow edges
+    // This creates blur at full block edges (AABB jitter alone is too small relative to block size)
+    vec3 tangent = normalize(cross(rayDir, vec3(0.0, 1.0, 0.001)));
+    vec3 bitangent = cross(rayDir, tangent);
+    vec2 diskJitter = (vec2(noise, fract(noise * 12.9898)) - 0.5) * 0.25;
+    vec3 startPos = surfaceVoxel + rayDir * 0.5 + tangent * diskJitter.x + bitangent * diskJitter.y;
 
-        // Track previous voxel to avoid double-checking same cell
-        ivec3 prevVoxel = ivec3(-1);
+    // Light source voxel (for lantern self-shadow check)
+    ivec3 lightVoxelCoord = ivec3(floor(lightVoxel));
 
-        // Accumulated shadow color (starts fully lit)
-        vec3 shadowTint = vec3(1.0);
+    // DDA setup
+    ivec3 voxelCoord = ivec3(floor(startPos));
+    ivec3 stepDir = ivec3(sign(rayDir));
+    
+    // Handle zero direction components to avoid division by zero
+    vec3 safeDirInv = 1.0 / max(abs(rayDir), vec3(1e-6)) * sign(rayDir + 1e-6);
+    vec3 tDelta = abs(safeDirInv);
+    
+    // Distance to next voxel boundary on each axis
+    vec3 nextBoundary = vec3(voxelCoord) + max(stepDir, ivec3(0));
+    vec3 tMax = (nextBoundary - startPos) * safeDirInv;
 
-        for (int i = 0; i < steps; i++) {
-            float dist = startOffset + stepSize * float(i);
-            if (dist >= rayLength - 0.4) break;
+    // Accumulated shadow color (starts fully lit)
+    vec3 shadowTint = vec3(1.0);
 
-            // Position along ray in voxel space
-            vec3 voxelPos = surfaceVoxel + rayDir * dist;
-            ivec3 voxelCoord = ivec3(floor(voxelPos));
+    // Max iterations as safety cap
+    for (int i = 0; i < 16; i++) {
+        // Check if we've reached the light
+        float currentDist = distance(vec3(voxelCoord) + 0.5, surfaceVoxel);
+        if (currentDist >= rayLength - 0.4) break;
 
-            // Skip if same voxel as previous step
-            if (voxelCoord == prevVoxel) continue;
-            prevVoxel = voxelCoord;
+        // Bounds check
+        if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
+            // Step to next voxel before continuing (might re-enter bounds)
+            if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                voxelCoord.x += stepDir.x;
+                tMax.x += tDelta.x;
+            } else if (tMax.y < tMax.z) {
+                voxelCoord.y += stepDir.y;
+                tMax.y += tDelta.y;
+            } else {
+                voxelCoord.z += stepDir.z;
+                tMax.z += tDelta.z;
+            }
+            continue;
+        }
 
-            // Bounds check
-            if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
+        // Sample voxel - check if solid block exists
+        uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
+
+        // If there's a block
+        if (blockId > 0u && blockId != 65535u) {
+            // Get block data for tint color
+            uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+
+            // Check if it's a light emitter
+            bool isLantern = (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN);
+            bool isLightSource = (voxelCoord == lightVoxelCoord);
+            float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
+            
+            // Test if ray actually hits the block's shape
+            if (!testBlockShape(blockId, surfaceVoxel, rayDir, vec3(voxelCoord))) {
+                // Step to next voxel
+                if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                    voxelCoord.x += stepDir.x;
+                    tMax.x += tDelta.x;
+                } else if (tMax.y < tMax.z) {
+                    voxelCoord.y += stepDir.y;
+                    tMax.y += tDelta.y;
+                } else {
+                    voxelCoord.z += stepDir.z;
+                    tMax.z += tDelta.z;
+                }
                 continue;
             }
 
-            // Sample voxel - check if solid block exists
-            uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
+            // Check if this is a transparent block (glass, ice, slime, etc.)
+            bool isTransparent = (blockId >= 301u && blockId <= 322u);
 
-            // If there's a block
-            if (blockId > 0u && blockId != 65535u) {
-                // Get block data for tint color
-                uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+            // if water, override color and transparency
+            if (blockId == BLOCK_WATER) {
+                isTransparent = true;
+                shadowTint *= vec3(0.5, 0.6, 0.7); // bluish tint
+            }
 
-                // Check if it's a light emitter (skip those)
-                float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
-                if (blockLightRange >= 1.0) continue;
+            if (!isTransparent) {
+                // Opaque block - full shadow
+                return vec3(0.0);
+            }
 
-                // Get tint color (for transparent blocks like stained glass)
-                vec3 tintColor = unpackUnorm4x8(blockData.g).rgb;
-                float tintBrightness = max(max(tintColor.r, tintColor.g), tintColor.b);
+            // Transparent block - use tint color for colored shadows
+            vec3 tintColor = unpackUnorm4x8(blockData.g).rgb;
+            float tintBrightness = max(max(tintColor.r, tintColor.g), tintColor.b);
 
-                // Calculate penumbra softness based on distance ratio
-                // Occluders closer to surface = sharper shadow, closer to light = softer
-                float occluderDist = dist;
-                float penumbra = occluderDist / rayLength; // 0 at surface, 1 at light
-                penumbra = penumbra * 0.15; // Small softness for edge anti-aliasing
+            // If tint is near black, it's opaque - full shadow
+            if (tintBrightness < 0.1) {
+                return vec3(0.0);
+            }
 
-                // If tint is near black, it's opaque
-                if (tintBrightness < 0.1) {
-                    // Mostly hard shadow with slight penumbra softness
-                    float shadowAmount = 1.0 - penumbra;
-                    return vec3(mix(1.0, 1.0 - shadowAmount, BLOCK_LIGHT_SHADOWS_STRENGTH));
-                }
+            // Accumulate tint color
+            shadowTint *= tintColor;
 
-                // Accumulate tint color (multiply for each transparent block)
-                shadowTint *= mix(vec3(1.0), tintColor, 1.0 - penumbra * 0.3);
-
-                // If accumulated tint is too dark, stop
-                if (max(max(shadowTint.r, shadowTint.g), shadowTint.b) < 0.05) {
-                    return vec3(mix(1.0, 0.0, BLOCK_LIGHT_SHADOWS_STRENGTH));
-                }
+            // If accumulated tint is too dark, stop
+            if (max(max(shadowTint.r, shadowTint.g), shadowTint.b) < 0.05) {
+                return vec3(0.0);
             }
         }
 
-        // Apply shadow strength to the tint
-        return mix(vec3(1.0), shadowTint, BLOCK_LIGHT_SHADOWS_STRENGTH);
+        // DDA step - advance along the axis with smallest tMax
+        if (tMax.x < tMax.y && tMax.x < tMax.z) {
+            voxelCoord.x += stepDir.x;
+            tMax.x += tDelta.x;
+        } else if (tMax.y < tMax.z) {
+            voxelCoord.y += stepDir.y;
+            tMax.y += tDelta.y;
+        } else {
+            voxelCoord.z += stepDir.z;
+            tMax.z += tDelta.z;
+        }
     }
+
+    return shadowTint;
+}
+
 #endif
 
 #ifdef IS_LPV_ENABLED

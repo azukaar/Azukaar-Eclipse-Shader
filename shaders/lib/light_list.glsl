@@ -5,6 +5,7 @@
 
 struct BlockLight {
     vec4 position; // xyz = world position, w = range
+    vec4 color;    // rgb = color, a = unused
 };
 
 #ifdef LIGHT_LIST_WRITE

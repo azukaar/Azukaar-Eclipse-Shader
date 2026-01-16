@@ -128,21 +128,7 @@ void main() {
 
         barrier();
 
-        // Reset light list at start of frame
-        #ifdef BLOCK_LIGHT_SHADOWS
-            // Initialize all slots to max distance (only first work group)
-            if (gl_WorkGroupID == uvec3(0)) {
-                uint tid = gl_LocalInvocationIndex;
-                if (tid < uint(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS)) {
-                    slotDist[tid] = 0xFFFFFFFFu;
-                }
-                if (tid == 0) {
-                    lightCount = 0;
-                }
-            }
-            barrier();
-            memoryBarrierBuffer();
-        #endif
+        // Reset is done by composite2
 
         // Exit early if outside LPV buffer size
         ivec3 imgCoord = ivec3(gl_GlobalInvocationID);
@@ -191,20 +177,17 @@ void main() {
                 // Add small buffer beyond FADE_END to prevent edge flickering
                 float distToCam = length(lightPlayerPos);
                 if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 4.0 && lightRange >= 8.0) {
-                    // Hash position to get slot
-                    uvec3 posHash = uvec3(imgCoord);
-                    uint hash = posHash.x * 73856093u ^ posHash.y * 19349663u ^ posHash.z * 83492791u;
+                    // Hash WORLD position for stable slot assignment
+                    ivec3 worldCoord = ivec3(floor(lightWorldPos));
+                    uint hash = uint(worldCoord.x) * 73856093u ^ uint(worldCoord.y) * 19349663u ^ uint(worldCoord.z) * 83492791u;
                     int slot = int(hash % uint(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS));
 
-                    // Convert distance to uint for atomic operations (closer = smaller)
                     uint myDist = uint(distToCam * 1000.0);
-
-                    // Try to claim slot - closer lights win via atomicMin
                     uint oldDist = atomicMin(slotDist[slot], myDist);
 
-                    // If we won (our distance is now in the slot), write our data
-                    if (myDist <= oldDist) {
+                    if (myDist < oldDist) {
                         lights[slot].position = vec4(lightWorldPos, lightRange);
+                        lights[slot].color = vec4(lightColor, 1.0);
                         atomicMax(lightCount, slot + 1);
                     }
                 }
