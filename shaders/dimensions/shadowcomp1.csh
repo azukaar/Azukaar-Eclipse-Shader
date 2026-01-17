@@ -25,7 +25,7 @@ void main() {
 
         // We have the lock, proceed with sorting
         int numLights = min(rawLightCount, MAX_BLOCK_LIGHTS_RAW);
-        int numToSort = min(numLights, BLOCK_LIGHT_SHADOWS_MAX_LIGHTS);
+        int numToSort = min(numLights, MAX_BLOCK_LIGHTS_BUFFER);
 
         // For each slot in sorted output
         for (int slot = 0; slot < numToSort; slot++) {

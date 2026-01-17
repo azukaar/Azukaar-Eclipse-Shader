@@ -1,7 +1,7 @@
 // Light list for block light shadows
 
 // Buffer size must be constant - use largest possible setting
-#define MAX_BLOCK_LIGHTS_BUFFER 128
+#define MAX_BLOCK_LIGHTS_BUFFER 256
 
 struct BlockLight {
     vec4 position; // xyz = world position, w = range

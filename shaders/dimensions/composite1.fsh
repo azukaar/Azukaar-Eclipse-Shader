@@ -1524,7 +1524,7 @@ void main() {
 			float surfaceDistToCam = length(feetPlayerPos);
 			float distanceFade = 1.0 - clamp((surfaceDistToCam - float(BLOCK_LIGHT_SHADOWS_FADE_START)) / (float(BLOCK_LIGHT_SHADOWS_FADE_END) - float(BLOCK_LIGHT_SHADOWS_FADE_START)), 0.0, 1.0);
 
-			int maxSlot = min(lightCount, BLOCK_LIGHT_SHADOWS_MAX_LIGHTS);
+			int maxSlot = min(lightCount, MAX_BLOCK_LIGHTS_BUFFER);
 
 			// DEBUG: Show light count as bar at top of screen
 			#ifdef BLOCK_LIGHT_SHADOWS_DEBUG
@@ -1535,7 +1535,7 @@ void main() {
 
 			// Draw light count bar at top of screen
 			if (texcoord.y < 0.02) {
-				float barWidth = float(validLights) / float(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS);
+				float barWidth = float(validLights) / float(MAX_BLOCK_LIGHTS_BUFFER);
 				if (texcoord.x < barWidth) {
 					// Green to red gradient based on how full
 					Indirect_lighting = mix(vec3(0.0, 2.0, 0.0), vec3(2.0, 0.0, 0.0), barWidth) * 5.0;
@@ -1564,47 +1564,46 @@ void main() {
 						vec3 lightPlayerPos = lightWorldPos - cameraPosition;
 
 						// Voxel-based shadow tracing (view-independent, returns color)
-						vec3 shadow = traceBlockLightShadow(feetPlayerPos, lightPlayerPos, shadowNoise);
+						// Use pre-POM position to avoid starting inside voxels
+						vec3 prePOMPos = feetPlayerPos + FlatNormals * POM_DEEPNESS * POM_DEPTH;
+						vec3 shadow = traceBlockLightShadow(prePOMPos, lightPlayerPos, shadowNoise, normal, FlatNormals);
 
 						// Fade light with distance
 						float lightPower = smoothstep(lightRange, 0.0, dist);
 						
 						vec3 lightColor = vec3(lights[i].color.x, lights[i].color.y, lights[i].color.z);
 
+						//vec3 finalShadow = vec3(1) - ((vec3(1)-shadow) * (lightPower));
+						vec3 finalShadow = shadow * lightPower;
+						//shadowSum += finalShadow;
+						//weightSum += lightPower;
 
-						if(lightPower > 0.01) {
-							shadow = min(shadow, lightPower);
+						if (dot(finalShadow, vec3(1.0)) > dot(shadowSum, vec3(1.0))) {
+							shadowSum = finalShadow;
+							weightSum = lightPower;
+						} 
 
-							shadowSum += shadow;
-							weightSum += 1 * lightPower;
-							anyLightProcessed = true;
-						}
+						if (dot(finalShadow, vec3(1.0)) >= dot(vec3(0.9), vec3(1.0))) {
+							break;
+						}					
 
 						shadowNoise = fract(shadowNoise + 0.618);
+
+						#ifdef BLOCK_LIGHT_SHADOWS_DEBUG
+							// Debug: tint toward red based on shadow darkness (white = no shadow, red = full shadow)
+							blockLightColor = vec3(0.0, blockLightColor.y + 0.1, 0.0);
+						#endif
 					}
 				}
 			}
 
-			// Apply shadow to indirect lighting (with distance fade)
-			if (anyLightProcessed && weightSum > 0.1) {
-				vec3 avgShadow = shadowSum / weightSum;
+			vec3 avgShadow = shadowSum ;
 
-				//avgShadow = pow(avgShadow, vec3(3));
+			avgShadow = pow(avgShadow, vec3(2));
 
-				vec3 finalShadow = mix(vec3(1.0), avgShadow, BLOCK_LIGHT_SHADOWS_STRENGTH * distanceFade);
+			vec3 finalShadow = mix(vec3(1.0), avgShadow, BLOCK_LIGHT_SHADOWS_STRENGTH * distanceFade);
 
-				#ifdef BLOCK_LIGHT_SHADOWS_DEBUG
-				// Debug: tint toward red based on shadow darkness (white = no shadow, red = full shadow)
-				if (dist < 5.0) {
-					blockLightColor = vec3(1.0, 0.0, 0.0);
-				}
-
-				float shadowAmount = 1.0 - dot(finalShadow, vec3(0.333));
-				blockLightColor *= vec3(1.0, 1.0 - shadowAmount, 1.0 - shadowAmount);
-				#else
-					blockLightColor *= finalShadow;
-				#endif
-			}
+			blockLightColor *= finalShadow;
 		}
 		#endif
 

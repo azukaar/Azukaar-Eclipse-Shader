@@ -916,19 +916,6 @@ void main() {
 	// Update light distances for next frame (only one pixel does this)
 	// Recalculate distances so closer lights can win via atomicMin in shadowcomp
 	#ifdef BLOCK_LIGHT_SHADOWS
-	if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) {
-		int maxSlot = 0;
-		float maxDist = float(BLOCK_LIGHT_SHADOWS_FADE_END) + 8.0;
-
-		for (int i = 0; i < BLOCK_LIGHT_SHADOWS_MAX_LIGHTS; i++) {
-			vec3 lightWorldPos = lights[i].position.xyz;
-			vec3 lightPlayerPos = lightWorldPos - cameraPosition;
-			float dist = length(lightPlayerPos);
-
-			slotDist[i] = 0xFFFFFFFFu;
-			maxSlot = i + 1;
-		}
-		lightCount = maxSlot;
-	}
+	lightCount = 0;
 	#endif
 }

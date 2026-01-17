@@ -300,87 +300,68 @@
         }
 
         // Default: pass through (don't shadow) - only explicitly defined shapes cast shadows
-        return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        //return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+        return false;
     }
 
-    vec3 traceBlockLightShadow(vec3 surfacePlayerPos, vec3 lightPlayerPos, float noise) {
-    // Convert to voxel grid coordinates
-    vec3 cameraOffset = fract(cameraPosition);
-    vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
-    vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+    vec3 traceBlockLightShadow(vec3 surfacePlayerPos, vec3 lightPlayerPos, float noise, vec3 normal, vec3 flatNormal) {
+        // Convert to voxel grid coordinates
+        vec3 cameraOffset = fract(cameraPosition);
+        vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+        vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
 
-    // Ray from surface to light in voxel space
-    vec3 rayVec = lightVoxel - surfaceVoxel;
-    float rayLength = length(rayVec);
-    if (rayLength < 0.5) return vec3(1.0);
-    vec3 rayDir = rayVec / rayLength;
+        // Ray from surface to light in voxel space
+        vec3 rayVec = lightVoxel - surfaceVoxel;
+        float rayLength = length(rayVec);
+        if (rayLength < 0.5) return vec3(1.0);
+        vec3 rayDir = rayVec / rayLength;
 
-    // Also jitter AABB bounds so non-full blocks blur similarly
-    aabbJitter = noise;
+        // Also jitter AABB bounds so non-full blocks blur similarly
+        aabbJitter = noise;
 
-    // Jitter ray start perpendicular to ray direction for soft shadow edges
-    // This creates blur at full block edges (AABB jitter alone is too small relative to block size)
-    vec3 tangent = normalize(cross(rayDir, vec3(0.0, 1.0, 0.001)));
-    vec3 bitangent = cross(rayDir, tangent);
-    vec2 diskJitter = (vec2(noise, fract(noise * 12.9898)) - 0.5) * 0.25;
-    vec3 startPos = surfaceVoxel + rayDir * 0.5 + tangent * diskJitter.x + bitangent * diskJitter.y;
+        // Jitter ray start perpendicular to ray direction for soft shadow edges
+        // This creates blur at full block edges (AABB jitter alone is too small relative to block size)
 
-    // Light source voxel (for lantern self-shadow check)
-    ivec3 lightVoxelCoord = ivec3(floor(lightVoxel));
+        vec3 tangent = normalize(cross(flatNormal, vec3(0.0, 1.0, 0.001)));
+        vec3 bitangent = cross(flatNormal, tangent);
+        vec2 diskJitter = (vec2(noise, fract(noise * 12.9898)) - 0.5) * 0.25;
 
-    // DDA setup
-    ivec3 voxelCoord = ivec3(floor(startPos));
-    ivec3 stepDir = ivec3(sign(rayDir));
-    
-    // Handle zero direction components to avoid division by zero
-    vec3 safeDirInv = 1.0 / max(abs(rayDir), vec3(1e-6)) * sign(rayDir + 1e-6);
-    vec3 tDelta = abs(safeDirInv);
-    
-    // Distance to next voxel boundary on each axis
-    vec3 nextBoundary = vec3(voxelCoord) + max(stepDir, ivec3(0));
-    vec3 tMax = (nextBoundary - startPos) * safeDirInv;
+        // Check if we're inside a solid voxel (POM can displace surface inside block)
+        ivec3 surfaceVoxelCoord = ivec3(floor(surfaceVoxel));
+        uint blockAtSurface = imageLoad(imgVoxelMask, surfaceVoxelCoord).r;
 
-    // Accumulated shadow color (starts fully lit)
-    vec3 shadowTint = vec3(1.0);
+        vec3 startPos = surfaceVoxel;
+        startPos = startPos + flatNormal * 0.01;
+        
+        startPos += tangent * diskJitter.x + bitangent * diskJitter.y;
 
-    // Max iterations as safety cap
-    for (int i = 0; i < 16; i++) {
-        // Check if we've reached the light
-        float currentDist = distance(vec3(voxelCoord) + 0.5, surfaceVoxel);
-        if (currentDist >= rayLength - 0.4) break;
+        // Light source voxel (for lantern self-shadow check)
+        ivec3 lightVoxelCoord = ivec3(floor(lightVoxel));
 
-        // Bounds check
-        if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
-            // Step to next voxel before continuing (might re-enter bounds)
-            if (tMax.x < tMax.y && tMax.x < tMax.z) {
-                voxelCoord.x += stepDir.x;
-                tMax.x += tDelta.x;
-            } else if (tMax.y < tMax.z) {
-                voxelCoord.y += stepDir.y;
-                tMax.y += tDelta.y;
-            } else {
-                voxelCoord.z += stepDir.z;
-                tMax.z += tDelta.z;
-            }
-            continue;
-        }
+        // DDA setup
+        ivec3 voxelCoord = ivec3(floor(startPos));
+        ivec3 stepDir = ivec3(sign(rayDir));
+        
+        // Handle zero direction components to avoid division by zero
+        vec3 safeDirInv = 1.0 / max(abs(rayDir), vec3(1e-6)) * sign(rayDir + 1e-6);
+        vec3 tDelta = abs(safeDirInv);
+        
+        // Distance to next voxel boundary on each axis
+        vec3 nextBoundary = vec3(voxelCoord) + max(stepDir, ivec3(0));
+        vec3 tMax = (nextBoundary - startPos) * safeDirInv;
 
-        // Sample voxel - check if solid block exists
-        uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
+        // Accumulated shadow color (starts fully lit)
+        vec3 shadowTint = vec3(1.0);
 
-        // If there's a block
-        if (blockId > 0u && blockId != 65535u) {
-            // Get block data for tint color
-            uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+        // Max iterations as safety cap
+        for (int i = 0; i < 24; i++) {
+            // Check if we've reached the light
+            float currentDist = distance(vec3(voxelCoord) + 0.5, surfaceVoxel);
+            if (currentDist >= rayLength - 0.4) break;
 
-            // Check if it's a light emitter
-            bool isLantern = (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN);
-            bool isLightSource = (voxelCoord == lightVoxelCoord);
-            float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
-            
-            // Test if ray actually hits the block's shape
-            if (!testBlockShape(blockId, surfaceVoxel, rayDir, vec3(voxelCoord))) {
-                // Step to next voxel
+            // Bounds check
+            if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
+                // Step to next voxel before continuing (might re-enter bounds)
                 if (tMax.x < tMax.y && tMax.x < tMax.z) {
                     voxelCoord.x += stepDir.x;
                     tMax.x += tDelta.x;
@@ -394,53 +375,78 @@
                 continue;
             }
 
-            // Check if this is a transparent block (glass, ice, slime, etc.)
-            bool isTransparent = (blockId >= 301u && blockId <= 322u);
+            // Sample voxel - check if solid block exists
+            uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
 
-            // if water, override color and transparency
-            if (blockId == BLOCK_WATER) {
-                isTransparent = true;
-                shadowTint *= vec3(0.5, 0.6, 0.7); // bluish tint
+            // If there's a block
+            if (blockId > 0u && blockId != 65535u) {
+                // Get block data for tint color
+                uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+
+                // Transparent block - use tint color for colored shadows
+                vec3 tintColor = unpackUnorm4x8(blockData.g).rgb;
+                float tintBrightness = max(max(tintColor.r, tintColor.g), tintColor.b);
+
+                // Check if it's a light emitter
+                bool isLantern = (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN);
+                bool isLightSource = (voxelCoord == lightVoxelCoord);
+                float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
+                
+                if (tintBrightness < 0.1) {
+                    return vec3(0.0);
+                }
+
+                // Check if this is a transparent block (glass, ice, slime, etc.)
+                bool isTransparent = (blockId >= 301u && blockId <= 322u);
+
+                if (isTransparent) {
+                    // early exit for glass/ice/slime - no shape test, just tint
+                    shadowTint *= tintColor;
+                } else if (blockId == BLOCK_WATER) {
+                    shadowTint *= vec3(0.5, 0.6, 0.7); // bluish tint
+                } else {
+                    // Test if ray actually hits the block's shape
+                    if (!testBlockShape(blockId, surfaceVoxel, rayDir, vec3(voxelCoord))) {
+                        // Step to next voxel
+                        if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                            voxelCoord.x += stepDir.x;
+                            tMax.x += tDelta.x;
+                        } else if (tMax.y < tMax.z) {
+                            voxelCoord.y += stepDir.y;
+                            tMax.y += tDelta.y;
+                        } else {
+                            voxelCoord.z += stepDir.z;
+                            tMax.z += tDelta.z;
+                        }
+                        shadowTint *= tintColor;
+                        continue;
+                    }
+                    
+                    return vec3(0.0);
+                }
+                
+
+                // If accumulated tint is too dark, stop
+                if (max(max(shadowTint.r, shadowTint.g), shadowTint.b) < 0.05) {
+                    return vec3(0.0);
+                }
             }
 
-            if (!isTransparent) {
-                // Opaque block - full shadow
-                return vec3(0.0);
-            }
-
-            // Transparent block - use tint color for colored shadows
-            vec3 tintColor = unpackUnorm4x8(blockData.g).rgb;
-            float tintBrightness = max(max(tintColor.r, tintColor.g), tintColor.b);
-
-            // If tint is near black, it's opaque - full shadow
-            if (tintBrightness < 0.1) {
-                return vec3(0.0);
-            }
-
-            // Accumulate tint color
-            shadowTint *= tintColor;
-
-            // If accumulated tint is too dark, stop
-            if (max(max(shadowTint.r, shadowTint.g), shadowTint.b) < 0.05) {
-                return vec3(0.0);
+            // DDA step - advance along the axis with smallest tMax
+            if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                voxelCoord.x += stepDir.x;
+                tMax.x += tDelta.x;
+            } else if (tMax.y < tMax.z) {
+                voxelCoord.y += stepDir.y;
+                tMax.y += tDelta.y;
+            } else {
+                voxelCoord.z += stepDir.z;
+                tMax.z += tDelta.z;
             }
         }
 
-        // DDA step - advance along the axis with smallest tMax
-        if (tMax.x < tMax.y && tMax.x < tMax.z) {
-            voxelCoord.x += stepDir.x;
-            tMax.x += tDelta.x;
-        } else if (tMax.y < tMax.z) {
-            voxelCoord.y += stepDir.y;
-            tMax.y += tDelta.y;
-        } else {
-            voxelCoord.z += stepDir.z;
-            tMax.z += tDelta.z;
-        }
+        return shadowTint;
     }
-
-    return shadowTint;
-}
 
 #endif
 

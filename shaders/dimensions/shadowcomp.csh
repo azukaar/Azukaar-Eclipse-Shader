@@ -178,18 +178,21 @@ void main() {
                 float distToCam = length(lightPlayerPos);
                 if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 4.0 && lightRange >= 8.0) {
                     // Hash WORLD position for stable slot assignment
-                    ivec3 worldCoord = ivec3(floor(lightWorldPos));
-                    uint hash = uint(worldCoord.x) * 73856093u ^ uint(worldCoord.y) * 19349663u ^ uint(worldCoord.z) * 83492791u;
-                    int slot = int(hash % uint(BLOCK_LIGHT_SHADOWS_MAX_LIGHTS));
+                    //ivec3 worldCoord = ivec3(floor(lightWorldPos));
+                    //uint hash = uint(worldCoord.x) * 73856093u ^ uint(worldCoord.y) * 19349663u ^ uint(worldCoord.z) * 83492791u;
+                    //int slot = int(hash % uint(MAX_BLOCK_LIGHTS_BUFFER));
 
-                    uint myDist = uint(distToCam * 1000.0);
-                    uint oldDist = atomicMin(slotDist[slot], myDist);
+                    //uint myDist = uint(distToCam * 1000.0);
+                    //uint oldDist = atomicMin(slotDist[slot], myDist);
 
-                    if (myDist < oldDist) {
-                        lights[slot].position = vec4(lightWorldPos, lightRange);
-                        lights[slot].color = vec4(lightColor, 1.0);
-                        atomicMax(lightCount, slot + 1);
-                    }
+                    //if (myDist < oldDist) {
+                    //    lights[slot].position = vec4(lightWorldPos, lightRange);
+                    //    lights[slot].color = vec4(lightColor, 1.0);
+                    //    atomicMax(lightCount, slot + 1);
+                    //}
+
+                    lights[atomicAdd(lightCount, 1)].position = vec4(lightWorldPos, lightRange);
+                    lights[atomicAdd(lightCount, 0)].color = vec4(lightColor, 1.0);
                 }
             #endif
         }
