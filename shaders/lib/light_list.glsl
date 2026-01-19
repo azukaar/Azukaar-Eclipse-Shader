@@ -12,14 +12,12 @@ struct BlockLight {
 layout(std430, binding = 1) buffer LightListBuffer {
     int lightCount;
     int pad1, pad2, pad3;
-    uint slotDist[MAX_BLOCK_LIGHTS_BUFFER];   // Distance * 1000 as uint (for atomicMin)
     BlockLight lights[MAX_BLOCK_LIGHTS_BUFFER];
 };
 #else
 layout(std430, binding = 1) readonly buffer LightListBuffer {
     int lightCount;
     int pad1, pad2, pad3;
-    uint slotDist[MAX_BLOCK_LIGHTS_BUFFER];
     BlockLight lights[MAX_BLOCK_LIGHTS_BUFFER];
 };
 #endif

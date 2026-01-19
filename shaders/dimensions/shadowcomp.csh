@@ -168,32 +168,35 @@ void main() {
 
             // Add to light list for shadow casting
             #ifdef BLOCK_LIGHT_SHADOWS
-                // Convert LPV coord to player-relative position (inverse of GetLpvPosition)
-                vec3 cameraOffset = fract(cameraPosition);
-                vec3 lightPlayerPos = vec3(imgCoord) - cameraOffset - vec3(LpvSize3) * 0.5 + 0.5;
-                vec3 lightWorldPos = lightPlayerPos + cameraPosition;
+                // Check if this is an interior light (all 6 neighbors are same block type)
+                // Skip interior lights to avoid filling buffer with large light sources like lava pools
+                ivec3 localPos = ivec3(gl_LocalInvocationID) + 1;
+                bool isInterior = true;
 
-                // Only add lights within range and with light level >= 8
-                // Add small buffer beyond FADE_END to prevent edge flickering
-                float distToCam = length(lightPlayerPos);
-                if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 4.0 && lightRange >= 8.0) {
-                    // Hash WORLD position for stable slot assignment
-                    //ivec3 worldCoord = ivec3(floor(lightWorldPos));
-                    //uint hash = uint(worldCoord.x) * 73856093u ^ uint(worldCoord.y) * 19349663u ^ uint(worldCoord.z) * 83492791u;
-                    //int slot = int(hash % uint(MAX_BLOCK_LIGHTS_BUFFER));
+                if (voxelSharedData[getSharedIndex(localPos + ivec3(-1, 0, 0))] != blockId) isInterior = false;
+                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 1, 0, 0))] != blockId) isInterior = false;
+                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0,-1, 0))] != blockId) isInterior = false;
+                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 1, 0))] != blockId) isInterior = false;
+                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0,-1))] != blockId) isInterior = false;
+                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0, 1))] != blockId) isInterior = false;
 
-                    //uint myDist = uint(distToCam * 1000.0);
-                    //uint oldDist = atomicMin(slotDist[slot], myDist);
+                // Only add edge/surface lights (not fully surrounded by same block)
+                if (!isInterior) {
+                    // Convert LPV coord to player-relative position (inverse of GetLpvPosition)
+                    vec3 cameraOffset = fract(cameraPosition);
+                    vec3 lightPlayerPos = vec3(imgCoord) - cameraOffset - vec3(LpvSize3) * 0.5 + 0.5;
 
-                    //if (myDist < oldDist) {
-                    //    lights[slot].position = vec4(lightWorldPos, lightRange);
-                    //    lights[slot].color = vec4(lightColor, 1.0);
-                    //    atomicMax(lightCount, slot + 1);
-                    //}
-
-                    lights[atomicAdd(lightCount, 1)].position = vec4(lightWorldPos, lightRange);
-                    lights[atomicAdd(lightCount, 0)].color = vec4(lightColor, 1.0);
+                    // Only add lights within range and with light level >= 8
+                    float distToCam = length(lightPlayerPos);
+                    if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 2.0 && lightRange >= 8.0) {
+                        int lightId = atomicAdd(lightCount, 1);
+                        if (lightId < MAX_BLOCK_LIGHTS_BUFFER) {
+                            lights[lightId].position = vec4(lightPlayerPos, lightRange);
+                            lights[lightId].color = vec4(lightColor, 1.0);
+                        }
+                    }
                 }
+                memoryBarrierBuffer();
             #endif
         }
 

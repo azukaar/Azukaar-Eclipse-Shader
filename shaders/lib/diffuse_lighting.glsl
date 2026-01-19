@@ -304,6 +304,90 @@
         return false;
     }
 
+    // Cheap shadow trace - just checks for full block occlusion, no tint, no soft shadows
+    float traceBlockLightShadowCheap(vec3 surfacePlayerPos, vec3 lightPlayerPos, vec3 flatNormal, float noise) {
+        // Convert to voxel grid coordinates
+        vec3 cameraOffset = fract(cameraPosition);
+        vec3 surfaceVoxel = surfacePlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+        vec3 lightVoxel = lightPlayerPos + cameraOffset + vec3(VoxelSize3) * 0.5;
+
+        // Ray from surface to light in voxel space
+        vec3 rayVec = lightVoxel - surfaceVoxel;
+        float rayLength = length(rayVec);
+        if (rayLength < 0.5) return 1.0;
+        vec3 rayDir = rayVec / rayLength;
+
+        // Jitter ray start perpendicular to ray direction for soft shadow edges
+        vec3 tangent = normalize(cross(flatNormal, vec3(0.0, 1.0, 0.001)));
+        vec3 bitangent = cross(flatNormal, tangent);
+        vec2 diskJitter = (vec2(noise, fract(noise * 12.9898)) - 0.5) * 0.25;
+
+        vec3 startPos = surfaceVoxel + flatNormal * 0.01;
+        startPos += tangent * diskJitter.x + bitangent * diskJitter.y;
+
+        // DDA setup
+        ivec3 voxelCoord = ivec3(floor(startPos));
+        ivec3 stepDir = ivec3(sign(rayDir));
+
+        vec3 safeDirInv = 1.0 / max(abs(rayDir), vec3(1e-6)) * sign(rayDir + 1e-6);
+        vec3 tDelta = abs(safeDirInv);
+
+        vec3 nextBoundary = vec3(voxelCoord) + max(stepDir, ivec3(0));
+        vec3 tMax = (nextBoundary - startPos) * safeDirInv;
+
+        // Fewer iterations for cheap version
+        for (int i = 0; i < 16; i++) {
+            float currentDist = distance(vec3(voxelCoord) + 0.5, surfaceVoxel);
+            if (currentDist >= rayLength - 0.4) break;
+
+            // Bounds check
+            if (any(lessThan(voxelCoord, ivec3(0))) || any(greaterThanEqual(voxelCoord, ivec3(VoxelSize3)))) {
+                if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                    voxelCoord.x += stepDir.x;
+                    tMax.x += tDelta.x;
+                } else if (tMax.y < tMax.z) {
+                    voxelCoord.y += stepDir.y;
+                    tMax.y += tDelta.y;
+                } else {
+                    voxelCoord.z += stepDir.z;
+                    tMax.z += tDelta.z;
+                }
+                continue;
+            }
+
+            // Sample voxel
+            uint blockId = imageLoad(imgVoxelMask, voxelCoord).r;
+
+            if (blockId > 0u && blockId != 65535u) {
+                // Skip light-emitting blocks
+                uvec2 blockData = imageLoad(imgBlockData, int(blockId % 2000u)).rg;
+                float blockLightRange = unpackUnorm4x8(blockData.r).a * 255.0;
+
+                // Skip transparent blocks (glass, ice, slime)
+                bool isTransparent = (blockId >= 301u && blockId <= 322u) || blockId == BLOCK_WATER;
+
+                if (!isTransparent && blockLightRange <= 0.0) {
+                    // Hit a solid non-emitting block - fully shadowed
+                    return 0.0;
+                }
+            }
+
+            // DDA step
+            if (tMax.x < tMax.y && tMax.x < tMax.z) {
+                voxelCoord.x += stepDir.x;
+                tMax.x += tDelta.x;
+            } else if (tMax.y < tMax.z) {
+                voxelCoord.y += stepDir.y;
+                tMax.y += tDelta.y;
+            } else {
+                voxelCoord.z += stepDir.z;
+                tMax.z += tDelta.z;
+            }
+        }
+
+        return 1.0;
+    }
+
     vec3 traceBlockLightShadow(vec3 surfacePlayerPos, vec3 lightPlayerPos, float noise, vec3 normal, vec3 flatNormal) {
         // Convert to voxel grid coordinates
         vec3 cameraOffset = fract(cameraPosition);
@@ -399,7 +483,9 @@
                 // Check if this is a transparent block (glass, ice, slime, etc.)
                 bool isTransparent = (blockId >= 301u && blockId <= 322u);
 
-                if (isTransparent) {
+                if(blockLightRange > 0.0) {
+                    continue;
+                } if (isTransparent) {
                     // early exit for glass/ice/slime - no shape test, just tint
                     shadowTint *= tintColor;
                 } else if (blockId == BLOCK_WATER) {
@@ -472,6 +558,53 @@
     }
 #endif
 
+vec3 doBlockHandLighting(
+    vec3 lightColor, float lightmap,
+    vec3 playerPos, vec3 lpvPos
+    #ifdef MAIN_SHADOW_PASS
+    , vec3 viewPos, bool depthCheck, float noise, vec3 normals, bool hand
+    #endif
+){
+    vec3 blockLight = vec3(0.0);
+
+    #ifdef Hand_Held_lights
+        // create handheld lightsources
+
+        if (heldItemId > 0){
+                float lightRange = 0.0;
+                vec3 handLightCol = GetHandLight(heldItemId, playerPos, lightRange);
+
+                #if defined MAIN_SHADOW_PASS && defined LPV_HANDHELD_SHADOWS
+                    if (lightRange > 0.0 && firstPersonCamera) handLightCol *=  SSRT_Handlight_Shadows(viewPos, depthCheck, -(viewPos + vec3(-0.25, 0.2, 0.0)), noise, normals, hand);
+                #endif
+
+                #ifdef WEATHER
+                    handLightCol *= 0.5;
+                #endif
+
+                blockLight += handLightCol;
+        }
+        
+
+        if (heldItemId2 > 0){
+                float lightRange2 = 0.0;
+                vec3 handLightCol2 = GetHandLight(heldItemId2, playerPos, lightRange2);
+                
+                #if defined MAIN_SHADOW_PASS && defined LPV_HANDHELD_SHADOWS
+                    if (lightRange2 > 0.0 && firstPersonCamera) handLightCol2 *= SSRT_Handlight_Shadows(viewPos, depthCheck, -(viewPos + vec3(0.25, 0.2, 0.0)), noise, normals, hand);
+                #endif
+
+                #ifdef WEATHER
+                    handLightCol2 *= 0.5;
+                #endif
+
+                blockLight += handLightCol2;
+        }
+    #endif
+
+    return blockLight;
+}
+
 vec3 doBlockLightLighting(
     vec3 lightColor, float lightmap,
     vec3 playerPos, vec3 lpvPos
@@ -506,40 +639,6 @@ vec3 doBlockLightLighting(
         // outside the voxel volume, lerp to vanilla lighting as a fallback
         blockLight = mix(blockLight, lpvSample.rgb + lightColor * 2.5 * min(max(lightmap-0.999,0.0)/(1.0-0.999),1.0), voxelRangeFalloff);
 
-        #ifdef Hand_Held_lights
-            // create handheld lightsources
-
-            if (heldItemId > 0){
-                    float lightRange = 0.0;
-                    vec3 handLightCol = GetHandLight(heldItemId, playerPos, lightRange);
-
-                    #if defined MAIN_SHADOW_PASS && defined LPV_HANDHELD_SHADOWS
-                        if (lightRange > 0.0 && firstPersonCamera) handLightCol *=  SSRT_Handlight_Shadows(viewPos, depthCheck, -(viewPos + vec3(-0.25, 0.2, 0.0)), noise, normals, hand);
-                    #endif
-
-                    #ifdef WEATHER
-                        handLightCol *= 0.5;
-                    #endif
-
-                    blockLight += handLightCol;
-            }
-            
-
-            if (heldItemId2 > 0){
-                    float lightRange2 = 0.0;
-                    vec3 handLightCol2 = GetHandLight(heldItemId2, playerPos, lightRange2);
-                    
-                    #if defined MAIN_SHADOW_PASS && defined LPV_HANDHELD_SHADOWS
-                        if (lightRange2 > 0.0 && firstPersonCamera) handLightCol2 *= SSRT_Handlight_Shadows(viewPos, depthCheck, -(viewPos + vec3(0.25, 0.2, 0.0)), noise, normals, hand);
-                    #endif
-
-                    #ifdef WEATHER
-                        handLightCol2 *= 0.5;
-                    #endif
-
-                    blockLight += handLightCol2;
-            }
-        #endif
     #endif
 
     return blockLight * TORCH_AMOUNT;

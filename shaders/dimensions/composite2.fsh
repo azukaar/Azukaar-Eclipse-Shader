@@ -916,6 +916,9 @@ void main() {
 	// Update light distances for next frame (only one pixel does this)
 	// Recalculate distances so closer lights can win via atomicMin in shadowcomp
 	#ifdef BLOCK_LIGHT_SHADOWS
-	lightCount = 0;
+	// Only reset from one pixel to avoid coherency issues
+	if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) {
+		lightCount = 0;
+	}
 	#endif
 }
