@@ -1580,99 +1580,107 @@ void main() {
 		int numValidLights = 0;
 		int minIdx = 0;
 		float minImpact = 999.0;
+		
+		if (distanceFade <= 0.0) {
+			Indirect_lighting += originalBlockLightColor;
+		} else {
+			for (int i = 0; i < maxSlot; i++) {
+				vec3 lightPlayerPos = lights[i].position.xyz;
+				float lightRange = lights[i].position.w;
+				float dist = distance(lightPlayerPos, feetPlayerPos);
+				if (dist >= lightRange) continue;
 
-		for (int i = 0; i < maxSlot; i++) {
-			vec3 lightPlayerPos = lights[i].position.xyz;
-			float lightRange = lights[i].position.w;
-			float dist = distance(lightPlayerPos, feetPlayerPos);
-			if (dist >= lightRange) continue;
+				float lightPower = smoothstep(lightRange, 0.0, dist);
+				lightPower = lightPower * lightPower;
+				if (lightPower <= 0.01) continue;
 
-			float lightPower = smoothstep(lightRange, 0.0, dist);
-			lightPower = lightPower * lightPower;
-			if (lightPower <= 0.01) continue;
+				vec3 lightDir = normalize(lightPlayerPos - feetPlayerPos);
+				float NdotL = max(dot(normal, lightDir), 0.0);
+				float impact = lightPower * NdotL;
+				if (impact <= 0.0) continue;
 
-			vec3 lightDir = normalize(lightPlayerPos - feetPlayerPos);
-			float NdotL = max(dot(normal, lightDir), 0.0);
-			float impact = lightPower * NdotL;
-			if (impact <= 0.0) continue;
-
-			if (numValidLights < BLOCK_LIGHT_MAX_SHADOW_TRACES) {
-				// Array not full, just add
-				validLightIdx[numValidLights] = i;
-				validLightImpact[numValidLights] = impact;
-				if (impact < minImpact) {
-					minImpact = impact;
-					minIdx = numValidLights;
-				}
-				numValidLights++;
-			} else if (impact > minImpact) {
-				// Replace minimum
-				validLightIdx[minIdx] = i;
-				validLightImpact[minIdx] = impact;
-				// Find new minimum
-				minImpact = validLightImpact[0];
-				minIdx = 0;
-				for (int k = 1; k < BLOCK_LIGHT_MAX_SHADOW_TRACES; k++) {
-					if (validLightImpact[k] < minImpact) {
-						minImpact = validLightImpact[k];
-						minIdx = k;
+				if (numValidLights < BLOCK_LIGHT_MAX_SHADOW_TRACES) {
+					// Array not full, just add
+					validLightIdx[numValidLights] = i;
+					validLightImpact[numValidLights] = impact;
+					if (impact < minImpact) {
+						minImpact = impact;
+						minIdx = numValidLights;
+					}
+					numValidLights++;
+				} else if (impact > minImpact) {
+					// Replace minimum
+					validLightIdx[minIdx] = i;
+					validLightImpact[minIdx] = impact;
+					// Find new minimum
+					minImpact = validLightImpact[0];
+					minIdx = 0;
+					for (int k = 1; k < BLOCK_LIGHT_MAX_SHADOW_TRACES; k++) {
+						if (validLightImpact[k] < minImpact) {
+							minImpact = validLightImpact[k];
+							minIdx = k;
+						}
 					}
 				}
 			}
+
+			// === PASS 2: Process lights by impact (loop only over numValidLights) ===
+			for (int j = 0; j < numValidLights; j++) {
+				// Find max among remaining valid lights
+				int bestK = 0;
+				for (int k = 1; k < numValidLights; k++) {
+					if (validLightImpact[k] > validLightImpact[bestK]) {
+						bestK = k;
+					}
+				}
+
+				int lightIdx = validLightIdx[bestK];
+				validLightImpact[bestK] = -1.0; // Mark as used
+
+				// Compute lighting
+				vec3 lightPlayerPos = lights[lightIdx].position.xyz;
+				float lightRange = lights[lightIdx].position.w;
+				vec3 lightColor = vec3(lights[lightIdx].color.x, lights[lightIdx].color.y, lights[lightIdx].color.z);
+
+				float dist = distance(lightPlayerPos, feetPlayerPos);
+				float lightPower = smoothstep(lightRange, 0.0, dist);
+				lightPower = lightPower * lightPower;
+
+				vec3 lightDir = normalize(lightPlayerPos - feetPlayerPos);
+				float NdotL = max(dot(normal, lightDir), 0.0);
+
+				vec3 halfDir = normalize(lightDir + viewDir);
+				float NdotH = max(dot(normal, halfDir), 0.0);
+				float specular = pow(NdotH, shininess) * NdotL;
+
+				vec3 diffuse = lightColor * lightPower * NdotL;
+				vec3 spec = lightColor * lightPower * specular;
+				vec3 contribution = diffuse + spec * 1.5;
+
+				// First half: full shadow, second half: cheap shadow
+				vec3 shadow = vec3(1.0);
+				if (distanceFade > 0.0) {
+					if (j < BLOCK_LIGHT_MAX_SHADOW_TRACES / 2) {
+						shadow = traceBlockLightShadow(prePOMPos, lightPlayerPos, shadowNoise, normal, normal);
+					} else {
+						shadow = vec3(traceBlockLightShadowCheap(prePOMPos, lightPlayerPos, FlatNormals, shadowNoise));
+					}
+					shadow = vec3(1) - (vec3(1) - shadow);
+				}
+
+				currentBlockLight += contribution * shadow;
+			}
+			// Add block light contribution
+			vec3 realFinalLight = currentBlockLight;
+
+			realFinalLight += originalBlockLightColor * 0.15;
+			
+			realFinalLight += handLight;
+
+			Indirect_lighting += realFinalLight * distanceFade + originalBlockLightColor * (1-distanceFade);
+
 		}
 
-		// === PASS 2: Process lights by impact (loop only over numValidLights) ===
-		for (int j = 0; j < numValidLights; j++) {
-			// Find max among remaining valid lights
-			int bestK = 0;
-			for (int k = 1; k < numValidLights; k++) {
-				if (validLightImpact[k] > validLightImpact[bestK]) {
-					bestK = k;
-				}
-			}
-
-			int lightIdx = validLightIdx[bestK];
-			validLightImpact[bestK] = -1.0; // Mark as used
-
-			// Compute lighting
-			vec3 lightPlayerPos = lights[lightIdx].position.xyz;
-			float lightRange = lights[lightIdx].position.w;
-			vec3 lightColor = vec3(lights[lightIdx].color.x, lights[lightIdx].color.y, lights[lightIdx].color.z);
-
-			float dist = distance(lightPlayerPos, feetPlayerPos);
-			float lightPower = smoothstep(lightRange, 0.0, dist);
-			lightPower = lightPower * lightPower;
-
-			vec3 lightDir = normalize(lightPlayerPos - feetPlayerPos);
-			float NdotL = max(dot(normal, lightDir), 0.0);
-
-			vec3 halfDir = normalize(lightDir + viewDir);
-			float NdotH = max(dot(normal, halfDir), 0.0);
-			float specular = pow(NdotH, shininess) * NdotL;
-
-			vec3 diffuse = lightColor * lightPower * NdotL;
-			vec3 spec = lightColor * lightPower * specular;
-			vec3 contribution = diffuse + spec * 1.5;
-
-			// First half: full shadow, second half: cheap shadow
-			vec3 shadow = vec3(1.0);
-			if (distanceFade > 0.0) {
-				if (j < BLOCK_LIGHT_MAX_SHADOW_TRACES / 2) {
-					shadow = traceBlockLightShadow(prePOMPos, lightPlayerPos, shadowNoise, normal, normal);
-				} else {
-					shadow = vec3(traceBlockLightShadowCheap(prePOMPos, lightPlayerPos, FlatNormals, shadowNoise));
-				}
-				shadow = vec3(1) - (vec3(1) - shadow) * distanceFade;
-			}
-
-			currentBlockLight += contribution * shadow;
-		}
-
-		// Add block light contribution
-		Indirect_lighting += currentBlockLight;
-
-		Indirect_lighting += originalBlockLightColor * 0.15;
-		Indirect_lighting += handLight;
 		#endif
 
 

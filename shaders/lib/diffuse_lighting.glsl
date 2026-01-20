@@ -100,208 +100,206 @@
         return tNear <= tFar && tFar > 0.0;
     }
 
+    // Shape type constants for lookup
+    #define SHAPE_NONE          0
+    #define SHAPE_FULL          1
+    #define SHAPE_SLAB_BOTTOM   2
+    #define SHAPE_SLAB_TOP      3
+    #define SHAPE_THIN_FLOOR    4   // carpet, pressure plate
+    #define SHAPE_SNOW          5
+    #define SHAPE_FENCE_POST    6
+    #define SHAPE_BARS_CROSS    7
+    #define SHAPE_LANTERN       8
+    #define SHAPE_DOOR_N        9
+    #define SHAPE_DOOR_S        10
+    #define SHAPE_DOOR_W        11
+    #define SHAPE_DOOR_E        12
+    #define SHAPE_TRAPDOOR_BOT  13
+    #define SHAPE_TRAPDOOR_TOP  14
+    #define SHAPE_TRAPDOOR_N    15
+    #define SHAPE_TRAPDOOR_S    16
+    #define SHAPE_TRAPDOOR_W    17
+    #define SHAPE_TRAPDOOR_E    18
+    #define SHAPE_STAIRS_BOT_N  19
+    #define SHAPE_STAIRS_BOT_S  20
+    #define SHAPE_STAIRS_BOT_W  21
+    #define SHAPE_STAIRS_BOT_E  22
+    #define SHAPE_STAIRS_TOP_N  23
+    #define SHAPE_STAIRS_TOP_S  24
+    #define SHAPE_STAIRS_TOP_W  25
+    #define SHAPE_STAIRS_TOP_E  26
+    #define SHAPE_STAIRS_INNER  27  // Simplified: full block approximation
+    #define SHAPE_STAIRS_OUTER  28  // Simplified: 3/4 block
+    #define SHAPE_WALL_POST     29  // Center post only
+
+    // Get shape type from block ID - uses range checks for efficiency
+    int getBlockShapeType(uint blockId) {
+        // Quick reject for air/unknown
+        if (blockId == 0u || blockId == 65535u) return SHAPE_NONE;
+
+        // Fences
+        if (blockId == BLOCK_LPV_MIN) return SHAPE_FENCE_POST;
+        if (blockId == BLOCK_LPV_MED) return SHAPE_BARS_CROSS;
+
+        // Lanterns
+        if (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN) return SHAPE_LANTERN;
+
+        // Slabs
+        if (blockId == BLOCK_SLAB_TOP) return SHAPE_SLAB_TOP;
+        if (blockId == BLOCK_SLAB_BOTTOM) return SHAPE_SLAB_BOTTOM;
+
+        // Thin floor blocks
+        if (blockId == BLOCK_CARPET || blockId == BLOCK_PRESSURE_PLATE) return SHAPE_THIN_FLOOR;
+        if (blockId == BLOCK_SNOW_LAYERS) return SHAPE_SNOW;
+
+        // Trapdoors
+        if (blockId == BLOCK_TRAPDOOR_BOTTOM) return SHAPE_TRAPDOOR_BOT;
+        if (blockId == BLOCK_TRAPDOOR_TOP) return SHAPE_TRAPDOOR_TOP;
+        if (blockId == BLOCK_TRAPDOOR_N) return SHAPE_TRAPDOOR_N;
+        if (blockId == BLOCK_TRAPDOOR_S) return SHAPE_TRAPDOOR_S;
+        if (blockId == BLOCK_TRAPDOOR_W) return SHAPE_TRAPDOOR_W;
+        if (blockId == BLOCK_TRAPDOOR_E) return SHAPE_TRAPDOOR_E;
+
+        // Stairs - bottom
+        if (blockId == BLOCK_STAIRS_BOTTOM_N) return SHAPE_STAIRS_BOT_N;
+        if (blockId == BLOCK_STAIRS_BOTTOM_S) return SHAPE_STAIRS_BOT_S;
+        if (blockId == BLOCK_STAIRS_BOTTOM_W) return SHAPE_STAIRS_BOT_W;
+        if (blockId == BLOCK_STAIRS_BOTTOM_E) return SHAPE_STAIRS_BOT_E;
+
+        // Stairs - top
+        if (blockId == BLOCK_STAIRS_TOP_N) return SHAPE_STAIRS_TOP_N;
+        if (blockId == BLOCK_STAIRS_TOP_S) return SHAPE_STAIRS_TOP_S;
+        if (blockId == BLOCK_STAIRS_TOP_W) return SHAPE_STAIRS_TOP_W;
+        if (blockId == BLOCK_STAIRS_TOP_E) return SHAPE_STAIRS_TOP_E;
+
+        // Stairs - corners (simplified to single shapes)
+        if (blockId >= BLOCK_STAIRS_BOTTOM_INNER_S_E && blockId <= BLOCK_STAIRS_TOP_INNER_N_E) return SHAPE_STAIRS_INNER;
+        if (blockId >= BLOCK_STAIRS_BOTTOM_OUTER_N_W && blockId <= BLOCK_STAIRS_TOP_OUTER_S_W) return SHAPE_STAIRS_OUTER;
+
+        // Walls - simplified to center post only (avoids complex arm checks)
+        if (blockId >= BLOCK_WALL_MIN && blockId <= BLOCK_WALL_MAX) return SHAPE_WALL_POST;
+
+        // Doors
+        if (blockId == BLOCK_DOOR_N) return SHAPE_DOOR_N;
+        if (blockId == BLOCK_DOOR_S) return SHAPE_DOOR_S;
+        if (blockId == BLOCK_DOOR_W) return SHAPE_DOOR_W;
+        if (blockId == BLOCK_DOOR_E) return SHAPE_DOOR_E;
+
+        return SHAPE_NONE;
+    }
+
     // Test if ray intersects the actual block shape (not just the voxel cube)
     // Returns true if ray is occluded by block geometry
     bool testBlockShape(uint blockId, vec3 rayOrigin, vec3 rayDir, vec3 voxelPos) {
+        int shapeType = getBlockShapeType(blockId);
 
-        // === FENCES / IRON BARS (block.51, block.52 in block.properties) ===
-        // These use BLOCK_LPV_MIN/MED IDs for LPV occlusion, but we need shape testing for shadows
-        // Fence: center post 4x16x4 pixels (0.25 x 1.5 x 0.25, extends above block)
-        if (blockId == BLOCK_LPV_MIN) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.375, 0.0, 0.375), vec3(0.625, 1.0, 0.625), voxelPos);
-        }
+        // Switch on shape type - compiler optimizes this much better than if-else chain
+        switch (shapeType) {
+            case SHAPE_NONE:
+                return false;
 
-        // Iron bars: thin cross shape (approximate as center + cross)
-        if (blockId == BLOCK_LPV_MED) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.4375, 0.0, 0.0), vec3(0.5625, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.4375), vec3(1.0, 1.0, 0.5625), voxelPos);
-        }
+            case SHAPE_FENCE_POST:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.375, 0.0, 0.375), vec3(0.625, 1.0, 0.625), voxelPos);
 
-        // === LANTERNS - fake cage shadow (cross + top/bottom) ===
-        // Simulates light inside lantern casting shadows through the frame
-        if (blockId == BLOCK_LANTERN || blockId == BLOCK_SOUL_LANTERN || blockId == BLOCK_COPPER_LANTERN) {
-            // Cross bars (N-S and E-W thin planes through center)
-            bool crossNS = rayHitsAABB(rayOrigin, rayDir, vec3(0.35, 0.0, 0.0), vec3(0.65, 1.0, 1.0), voxelPos);
-            bool crossEW = rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.35), vec3(1.0, 1.0, 0.65), voxelPos);
-            // Top and bottom plates
-            bool top = rayHitsAABB(rayOrigin, rayDir, vec3(0.2, 0.85, 0.2), vec3(0.8, 1.0, 0.8), voxelPos);
-            bool bottom = rayHitsAABB(rayOrigin, rayDir, vec3(0.2, 0.0, 0.2), vec3(0.8, 0.15, 0.8), voxelPos);
-            return crossNS || crossEW || top || bottom;
-        }
+            case SHAPE_BARS_CROSS:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.4375, 0.0, 0.0), vec3(0.5625, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.4375), vec3(1.0, 1.0, 0.5625), voxelPos);
 
-        // === SLABS ===
-        if (blockId == BLOCK_SLAB_TOP) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_SLAB_BOTTOM) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
-        }
+            case SHAPE_LANTERN:
+                // Simplified: just cross pattern (reduced from 4 AABBs to 2)
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.3, 0.0, 0.0), vec3(0.7, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.3), vec3(1.0, 1.0, 0.7), voxelPos);
 
-        // === CARPET / PRESSURE PLATE / SNOW ===
-        if (blockId == BLOCK_CARPET || blockId == BLOCK_PRESSURE_PLATE) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0625, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_SNOW_LAYERS) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.25, 1.0), voxelPos);
-        }
+            case SHAPE_SLAB_BOTTOM:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
 
-        // === TRAPDOORS (closed) ===
-        if (blockId == BLOCK_TRAPDOOR_BOTTOM) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.1875, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_TRAPDOOR_TOP) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.8125, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
-        // Trapdoors open (vertical)
-        if (blockId == BLOCK_TRAPDOOR_N) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
-        }
-        if (blockId == BLOCK_TRAPDOOR_S) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_TRAPDOOR_W) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_TRAPDOOR_E) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
+            case SHAPE_SLAB_TOP:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
 
-        // === STAIRS (bottom) - L-shaped, test 2 boxes ===
-        // Bottom slab + back portion based on facing
-        if (blockId == BLOCK_STAIRS_BOTTOM_N) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 0.5), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_BOTTOM_S) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.5), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_BOTTOM_W) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(0.5, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_BOTTOM_E) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
+            case SHAPE_THIN_FLOOR:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0625, 1.0), voxelPos);
 
-        // === STAIRS (top, upside-down) ===
-        if (blockId == BLOCK_STAIRS_TOP_N) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 0.5), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_TOP_S) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.5), vec3(1.0, 0.5, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_TOP_W) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.5, 0.5, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_STAIRS_TOP_E) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
-        }
+            case SHAPE_SNOW:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.25, 1.0), voxelPos);
 
-        // === STAIRS (inner corners - 3/4 block) ===
-        if (blockId >= BLOCK_STAIRS_BOTTOM_INNER_S_E && blockId <= BLOCK_STAIRS_BOTTOM_INNER_N_E) {
-            // Inner corners are mostly solid - approximate as full bottom + 3/4 top
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 0.5), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.5), vec3(0.5, 1.0, 1.0), voxelPos);
-        }
-        if (blockId >= BLOCK_STAIRS_TOP_INNER_S_E && blockId <= BLOCK_STAIRS_TOP_INNER_N_E) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 0.5), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.5), vec3(0.5, 0.5, 1.0), voxelPos);
-        }
+            case SHAPE_TRAPDOOR_BOT:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.1875, 1.0), voxelPos);
 
-        // === STAIRS (outer corners - 1/4 block on top) ===
-        if (blockId >= BLOCK_STAIRS_BOTTOM_OUTER_N_W && blockId <= BLOCK_STAIRS_BOTTOM_OUTER_S_W) {
-            // Outer corners: bottom slab + small corner piece
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(0.5, 1.0, 0.5), voxelPos);
-        }
-        if (blockId >= BLOCK_STAIRS_TOP_OUTER_N_W && blockId <= BLOCK_STAIRS_TOP_OUTER_S_W) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
-                   rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.5, 0.5, 0.5), voxelPos);
-        }
+            case SHAPE_TRAPDOOR_TOP:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.8125, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
 
-        // === WALLS - center post (4x16x4 pixels = 0.25 x 1.0 x 0.25) ===
-        if (blockId >= BLOCK_WALL_MIN && blockId <= BLOCK_WALL_MAX) {
-            // All walls have center post
-            bool hit = rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.3125), vec3(0.6875, 1.0, 0.6875), voxelPos);
+            case SHAPE_TRAPDOOR_N:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
 
-            // Check for arm extensions based on connection state
-            // Wall connections extend from center to edge
-            // LOW walls are 0.8125 tall, TALL walls are full height
-            float wallHeight = 1.0; // Simplified - treat all as full height for shadows
+            case SHAPE_TRAPDOOR_S:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
 
-            // North arm (negative Z)
-            if (blockId == BLOCK_WALL_POST_LOW_N || blockId == BLOCK_WALL_POST_LOW_N_S ||
-                blockId == BLOCK_WALL_POST_LOW_N_W || blockId == BLOCK_WALL_POST_LOW_N_E ||
-                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_N_E_S ||
-                blockId == BLOCK_WALL_POST_LOW_W_N_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
-                blockId == BLOCK_WALL_POST_TALL_N || blockId == BLOCK_WALL_POST_TALL_N_S ||
-                blockId == BLOCK_WALL_POST_TALL_N_W || blockId == BLOCK_WALL_POST_TALL_N_E ||
-                blockId == BLOCK_WALL_LOW_N_S || blockId == BLOCK_WALL_LOW_N_W || blockId == BLOCK_WALL_LOW_N_E ||
-                blockId == BLOCK_WALL_TALL_N_S || blockId == BLOCK_WALL_TALL_N_W || blockId == BLOCK_WALL_TALL_N_E) {
-                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.0), vec3(0.6875, wallHeight, 0.3125), voxelPos);
-            }
-            // South arm (positive Z)
-            if (blockId == BLOCK_WALL_POST_LOW_S || blockId == BLOCK_WALL_POST_LOW_N_S ||
-                blockId == BLOCK_WALL_POST_LOW_S_W || blockId == BLOCK_WALL_POST_LOW_S_E ||
-                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_N_E_S ||
-                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
-                blockId == BLOCK_WALL_POST_TALL_S || blockId == BLOCK_WALL_POST_TALL_N_S ||
-                blockId == BLOCK_WALL_POST_TALL_S_W || blockId == BLOCK_WALL_POST_TALL_S_E ||
-                blockId == BLOCK_WALL_LOW_N_S || blockId == BLOCK_WALL_LOW_S_W || blockId == BLOCK_WALL_LOW_S_E ||
-                blockId == BLOCK_WALL_TALL_N_S || blockId == BLOCK_WALL_TALL_S_W || blockId == BLOCK_WALL_TALL_S_E) {
-                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.6875), vec3(0.6875, wallHeight, 1.0), voxelPos);
-            }
-            // West arm (negative X)
-            if (blockId == BLOCK_WALL_POST_LOW_W || blockId == BLOCK_WALL_POST_LOW_W_E ||
-                blockId == BLOCK_WALL_POST_LOW_N_W || blockId == BLOCK_WALL_POST_LOW_S_W ||
-                blockId == BLOCK_WALL_POST_LOW_N_W_S || blockId == BLOCK_WALL_POST_LOW_W_N_E ||
-                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
-                blockId == BLOCK_WALL_POST_TALL_W || blockId == BLOCK_WALL_POST_TALL_W_E ||
-                blockId == BLOCK_WALL_POST_TALL_N_W || blockId == BLOCK_WALL_POST_TALL_S_W ||
-                blockId == BLOCK_WALL_LOW_W_E || blockId == BLOCK_WALL_LOW_N_W || blockId == BLOCK_WALL_LOW_S_W ||
-                blockId == BLOCK_WALL_TALL_W_E || blockId == BLOCK_WALL_TALL_N_W || blockId == BLOCK_WALL_TALL_S_W) {
-                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.3125), vec3(0.3125, wallHeight, 0.6875), voxelPos);
-            }
-            // East arm (positive X)
-            if (blockId == BLOCK_WALL_POST_LOW_E || blockId == BLOCK_WALL_POST_LOW_W_E ||
-                blockId == BLOCK_WALL_POST_LOW_N_E || blockId == BLOCK_WALL_POST_LOW_S_E ||
-                blockId == BLOCK_WALL_POST_LOW_N_E_S || blockId == BLOCK_WALL_POST_LOW_W_N_E ||
-                blockId == BLOCK_WALL_POST_LOW_W_S_E || blockId == BLOCK_WALL_POST_LOW_ALL ||
-                blockId == BLOCK_WALL_POST_TALL_E || blockId == BLOCK_WALL_POST_TALL_W_E ||
-                blockId == BLOCK_WALL_POST_TALL_N_E || blockId == BLOCK_WALL_POST_TALL_S_E ||
-                blockId == BLOCK_WALL_LOW_W_E || blockId == BLOCK_WALL_LOW_N_E || blockId == BLOCK_WALL_LOW_S_E ||
-                blockId == BLOCK_WALL_TALL_W_E || blockId == BLOCK_WALL_TALL_N_E || blockId == BLOCK_WALL_TALL_S_E) {
-                hit = hit || rayHitsAABB(rayOrigin, rayDir, vec3(0.6875, 0.0, 0.3125), vec3(1.0, wallHeight, 0.6875), voxelPos);
-            }
+            case SHAPE_TRAPDOOR_W:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
 
-            return hit;
-        }
+            case SHAPE_TRAPDOOR_E:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
 
-        // === DOORS (thin vertical panels) ===
-        if (blockId == BLOCK_DOOR_N) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
-        }
-        if (blockId == BLOCK_DOOR_S) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_DOOR_W) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
-        }
-        if (blockId == BLOCK_DOOR_E) {
-            return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        }
+            // Stairs - 2 AABBs each (bottom slab + step)
+            case SHAPE_STAIRS_BOT_N:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 0.5), voxelPos);
 
-        // Default: pass through (don't shadow) - only explicitly defined shapes cast shadows
-        //return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
-        return false;
+            case SHAPE_STAIRS_BOT_S:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.5), vec3(1.0, 1.0, 1.0), voxelPos);
+
+            case SHAPE_STAIRS_BOT_W:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(0.5, 1.0, 1.0), voxelPos);
+
+            case SHAPE_STAIRS_BOT_E:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+
+            case SHAPE_STAIRS_TOP_N:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.5, 0.5), voxelPos);
+
+            case SHAPE_STAIRS_TOP_S:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.5), vec3(1.0, 0.5, 1.0), voxelPos);
+
+            case SHAPE_STAIRS_TOP_W:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.5, 0.5, 1.0), voxelPos);
+
+            case SHAPE_STAIRS_TOP_E:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), voxelPos) ||
+                       rayHitsAABB(rayOrigin, rayDir, vec3(0.5, 0.0, 0.0), vec3(1.0, 0.5, 1.0), voxelPos);
+
+            // Stair corners - simplified to approximate shapes (1 AABB instead of 3)
+            case SHAPE_STAIRS_INNER:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos); // Nearly full
+
+            case SHAPE_STAIRS_OUTER:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 0.75, 1.0), voxelPos); // 3/4 height
+
+            // Walls - just center post (simplified from up to 5 AABBs)
+            case SHAPE_WALL_POST:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.3125, 0.0, 0.3125), vec3(0.6875, 1.0, 0.6875), voxelPos);
+
+            // Doors
+            case SHAPE_DOOR_N:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(1.0, 1.0, 0.1875), voxelPos);
+
+            case SHAPE_DOOR_S:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.8125), vec3(1.0, 1.0, 1.0), voxelPos);
+
+            case SHAPE_DOOR_W:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.0, 0.0, 0.0), vec3(0.1875, 1.0, 1.0), voxelPos);
+
+            case SHAPE_DOOR_E:
+                return rayHitsAABB(rayOrigin, rayDir, vec3(0.8125, 0.0, 0.0), vec3(1.0, 1.0, 1.0), voxelPos);
+
+            default:
+                return false;
+        }
     }
 
     // Cheap shadow trace - just checks for full block occlusion, no tint, no soft shadows

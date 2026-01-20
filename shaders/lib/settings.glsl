@@ -1117,15 +1117,16 @@ const vec3 aerochrome_color = mix(vec3(1.0, 0.0, 0.0), vec3(0.715, 0.303, 0.631)
 // Block light shadows (shadows cast by placed light sources like torches)
 #define BLOCK_LIGHT_SHADOWS
 #define BLOCK_LIGHT_SHADOWS_STRENGTH 0.9 // [0.5 0.6 0.7 0.8 0.9 1.0]
-#define BLOCK_LIGHT_SHADOWS_QUALITY 8 // [4 8 12 16]
-#define BLOCK_LIGHT_SHADOWS_FADE_START 8 // [8 16 32]
-#define BLOCK_LIGHT_SHADOWS_FADE_END 16 // [16 32 40]
+#define BLOCK_LIGHT_SHADOWS_FADE_START 16 // [8 16 32 48 64 80]
 // #define BLOCK_LIGHT_SHADOWS_DEBUG // Shows selected lights as red/yellow markers
 
 // Shadow noise uses R2 sequence with 4-frame cycling for better TAA convergence
 
 // Max shadow traces per pixel - only the N most impactful lights get shadow traced
 #define BLOCK_LIGHT_MAX_SHADOW_TRACES 8 // [4 8 16]
+
+// Max lights in the buffer - higher = more lights tracked, but more memory/slower
+#define MAX_BLOCK_LIGHTS_BUFFER 256 // [128 256 512]
 
 // Only enable if LPV is enabled (need the voxel data)
 #ifndef IS_LPV_ENABLED

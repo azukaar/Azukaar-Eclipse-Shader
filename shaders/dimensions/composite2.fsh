@@ -918,6 +918,11 @@ void main() {
 	#ifdef BLOCK_LIGHT_SHADOWS
 	// Only reset from one pixel to avoid coherency issues
 	if (gl_FragCoord.x < 1.0 && gl_FragCoord.y < 1.0) {
+		// Save current lights to previous buffer before reset
+		prevLightCount = lightCount;
+		for (int i = 0; i < min(lightCount, MAX_BLOCK_LIGHTS_BUFFER); i++) {
+			prevLights[i] = lights[i];
+		}
 		lightCount = 0;
 	}
 	#endif

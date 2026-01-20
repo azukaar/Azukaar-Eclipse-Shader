@@ -173,12 +173,22 @@ void main() {
                 ivec3 localPos = ivec3(gl_LocalInvocationID) + 1;
                 bool isInterior = true;
 
-                if (voxelSharedData[getSharedIndex(localPos + ivec3(-1, 0, 0))] != blockId) isInterior = false;
-                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 1, 0, 0))] != blockId) isInterior = false;
-                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0,-1, 0))] != blockId) isInterior = false;
-                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 1, 0))] != blockId) isInterior = false;
-                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0,-1))] != blockId) isInterior = false;
-                else if (voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0, 1))] != blockId) isInterior = false;
+                uint neighborXN = voxelSharedData[getSharedIndex(localPos + ivec3(-1, 0, 0))];
+                uint neighborXP = voxelSharedData[getSharedIndex(localPos + ivec3( 1, 0, 0))];
+                uint neighborYN = voxelSharedData[getSharedIndex(localPos + ivec3( 0,-1, 0))];
+                uint neighborYP = voxelSharedData[getSharedIndex(localPos + ivec3( 0, 1, 0))];
+                uint neighborZN = voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0,-1))];
+                uint neighborZP = voxelSharedData[getSharedIndex(localPos + ivec3( 0, 0, 1))];
+
+                // For lava, air on TOP doesn't break interior status (lava pools with air on top stay interior)
+                bool isLava = (blockId == BLOCK_LAVA);
+
+                if (neighborXN != blockId) isInterior = false;
+                else if (neighborXP != blockId) isInterior = false;
+                else if (neighborYN != blockId) isInterior = false;
+                else if (neighborYP != blockId && (!isLava || neighborYP != 0u)) isInterior = false;
+                else if (neighborZN != blockId) isInterior = false;
+                else if (neighborZP != blockId) isInterior = false;
 
                 // Only add edge/surface lights (not fully surrounded by same block)
                 if (!isInterior) {
@@ -186,13 +196,28 @@ void main() {
                     vec3 cameraOffset = fract(cameraPosition);
                     vec3 lightPlayerPos = vec3(imgCoord) - cameraOffset - vec3(LpvSize3) * 0.5 + 0.5;
 
+                    // Skip lights below Y=32 in Nether (lava ocean)
+                    #ifdef IS_NETHER
+                        float worldYLimit = cameraPosition.y + lightPlayerPos.y;
+                    #else
+                        float worldYLimit = 999.0;
+                    #endif
+
                     // Only add lights within range and with light level >= 8
                     float distToCam = length(lightPlayerPos);
-                    if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 2.0 && lightRange >= 8.0) {
-                        int lightId = atomicAdd(lightCount, 1);
-                        if (lightId < MAX_BLOCK_LIGHTS_BUFFER) {
-                            lights[lightId].position = vec4(lightPlayerPos, lightRange);
-                            lights[lightId].color = vec4(lightColor, 1.0);
+                    if (distToCam < float(BLOCK_LIGHT_SHADOWS_FADE_END) + 8.0 && lightRange >= 8.0 && worldYLimit >= 32.0) {
+                        // In the last 10% of buffer, prioritize lights that were in previous frame
+                        bool shouldAdd = true;
+                        if (lightCount >= LIGHT_BUFFER_PRIORITY_THRESHOLD) {
+                            shouldAdd = wasLightInPrevFrame(lightPlayerPos);
+                        }
+
+                        if (shouldAdd) {
+                            int lightId = atomicAdd(lightCount, 1);
+                            if (lightId < MAX_BLOCK_LIGHTS_BUFFER) {
+                                lights[lightId].position = vec4(lightPlayerPos, lightRange);
+                                lights[lightId].color = vec4(lightColor, 1.0);
+                            }
                         }
                     }
                 }

@@ -254,6 +254,19 @@ screen.Direct_Light = Direct Light
             value.LPV_HANDHELD_SHADOWS_QUALITY.0 = Low
             value.LPV_HANDHELD_SHADOWS_QUALITY.1 = High
 
+        option.BLOCK_LIGHT_SHADOWS = Block Light Shadows
+        option.BLOCK_LIGHT_SHADOWS.comment = Enables shadows cast by placed light sources like torches, lanterns, and glowstone.
+        option.BLOCK_LIGHT_SHADOWS_STRENGTH = Shadow Strength
+        option.BLOCK_LIGHT_SHADOWS_STRENGTH.comment = Controls how dark the shadows are.
+        option.BLOCK_LIGHT_SHADOWS_FADE_START = Fade Start Distance
+        option.BLOCK_LIGHT_SHADOWS_FADE_START.comment = Distance (in blocks) where shadows start fading out.
+            suffix.BLOCK_LIGHT_SHADOWS_FADE_START =  blocks
+            suffix.BLOCK_LIGHT_SHADOWS_FADE_END =  blocks
+        option.BLOCK_LIGHT_MAX_SHADOW_TRACES = Max Light per pixel
+        option.BLOCK_LIGHT_MAX_SHADOW_TRACES.comment = Maximum lights per pixel that cast shadows. Higher = more accurate but slower. (increase this to remove flicker in the Nether)
+        option.MAX_BLOCK_LIGHTS_BUFFER = Light Buffer Size
+        option.MAX_BLOCK_LIGHTS_BUFFER.comment = Maximum number of lights tracked for shadows. Increase if lights flicker in complex scenes.
+
 
 screen.Ambient_light = Ambient Light
     option.AO_Strength = AO Multiplier
